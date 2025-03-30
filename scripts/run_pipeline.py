@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-End-to-end video training pipeline.
+End-to-End Video Training Pipeline
 
-This script performs the following steps:
-1. Captions the videos using caption_videos.py.
-2. Preprocesses the dataset using preprocess_dataset.py.
-3. Updates the YAML training configuration with user-specified parameters such as
-   the preprocessed data root, output directory (timestamped), video dimensions, and training token.
-4. Runs the training using train.py with the updated config.
+This script:
+  1. Captions videos using caption_videos.py.
+  2. Preprocesses the dataset using preprocess_dataset.py.
+  3. Loads an existing YAML training configuration, updates key parameters 
+     (such as file paths, output directory, resolution buckets, training token, 
+     and video dimensions), and writes the updated config to a timestamped folder.
+  4. Runs training using train.py with the updated configuration.
+
+If no caption output file is specified, it will be automatically saved as 
+"captions.json" in the dataset folder and then used for preprocessing.
 """
 
 import argparse
@@ -45,28 +49,27 @@ def run_preprocessing(args, captions_output):
 
 def update_yaml_config(args, training_output_dir):
     """
-    Open the original YAML config, update file paths and parameters, and save to a new file.
+    Update the training YAML configuration.
+    
     Updates include:
-      - data.preprocessed_data_root (either from an override or derived from dataset_dir)
-      - validation.video_dims (if provided via --video_dims or using the resolution_buckets)
-      - data.training_token (set to the provided id_token)
-      - output_dir is updated to the unique training output folder.
+      - data.preprocessed_data_root (override if provided, otherwise defaults to a subfolder in dataset_dir)
+      - validation.video_dims (from --video_dims or derived from resolution_buckets)
+      - data.training_token (set to id_token)
+      - output_dir (set to a unique timestamped folder)
     """
     with open(args.config_path, 'r') as f:
         config = yaml.safe_load(f)
 
-    # Update the preprocessed data root.
+    # Set preprocessed data root (override or default to dataset_dir/.precomputed)
     if args.preprocessed_data_root:
         config['data']['preprocessed_data_root'] = args.preprocessed_data_root
     else:
-        # Default: use a subfolder named ".precomputed" inside the dataset directory.
         config['data']['preprocessed_data_root'] = os.path.join(args.dataset_dir, ".precomputed")
 
-    # Update the output directory to our unique timestamped folder.
+    # Set a unique output directory for training
     config['output_dir'] = training_output_dir
 
-    # Update video dimensions for validation.
-    # If a specific video_dims is provided (format: WxHxF), use it.
+    # Update video dimensions if provided, or derive from resolution_buckets if possible
     if args.video_dims:
         try:
             dims = [int(x) for x in args.video_dims.split('x')]
@@ -76,23 +79,23 @@ def update_yaml_config(args, training_output_dir):
         except Exception as e:
             print("Error parsing --video_dims:", e)
     else:
-        # Otherwise, attempt to parse resolution_buckets (e.g. "768x768x25")
+        # Fallback to using resolution_buckets (if in WxHxF format)
         try:
             dims = [int(x) for x in args.resolution_buckets.split('x')]
             if len(dims) == 3:
                 config['validation']['video_dims'] = dims
         except Exception as e:
-            print("Error parsing --resolution_buckets for video_dims:", e)
+            print("Error parsing resolution_buckets for video_dims:", e)
 
-    # Optionally update training token in the config (store it in the data section).
+    # Update training token in data section
     config['data']['training_token'] = args.id_token
 
-    # Save the updated configuration to a new YAML file inside the training output folder.
+    # Save the updated configuration to a new YAML file in the training output folder.
     updated_config_filename = os.path.basename(args.config_path).replace('.yaml', '_updated.yaml')
     updated_config_path = os.path.join(training_output_dir, updated_config_filename)
     with open(updated_config_path, 'w') as f:
         yaml.dump(config, f)
-    
+
     print(f"Updated YAML config saved to: {updated_config_path}")
     return updated_config_path
 
@@ -108,36 +111,39 @@ def run_training(updated_config_path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="End-to-end video training pipeline: caption, preprocess, update config, and train."
+        description="End-to-end training: caption videos, preprocess dataset, update YAML config, and run training."
     )
-    # Required dataset/video folder.
-    parser.add_argument("dataset_dir", type=str, help="Path to folder containing the videos")
+    # Required: dataset folder path
+    parser.add_argument("dataset_dir", type=str, help="Path to the folder containing videos")
+    
+    # Optional output file for captions (if not given, will use dataset_dir/captions.json)
+    parser.add_argument("--captions_output", type=str, default=None,
+                        help="File path for saving captions JSON. Default: dataset_dir/captions.json")
 
-    # Output configuration for captions and training.
+    # Optional base directory for training outputs
     parser.add_argument("--output_dir_base", type=str, default="outputs", help="Base directory for training outputs")
-    parser.add_argument("--captions_output", type=str, default=None, help="File path to save captions JSON")
 
-    # Captioning parameters.
+    # Captioning parameters
     parser.add_argument("--captioner_type", type=str, default="llava_next_7b", help="Type of captioner to use")
 
-    # Preprocessing parameters.
-    parser.add_argument("--caption_column", type=str, default="caption", help="Name of the caption column")
-    parser.add_argument("--video_column", type=str, default="media_path", help="Name of the video path column")
-    parser.add_argument("--id_token", type=str, default="T1m3l4ps3", help="Token used for preprocessing")
+    # Preprocessing parameters
+    parser.add_argument("--caption_column", type=str, default="caption", help="Caption column name")
+    parser.add_argument("--video_column", type=str, default="media_path", help="Video path column name")
+    parser.add_argument("--id_token", type=str, default="T1m3l4ps3", help="Training token for preprocessing")
     parser.add_argument("--resolution_buckets", type=str, default="768x768x25", help="Resolution buckets in WxHxF format")
 
-    # YAML configuration parameters.
+    # YAML config parameters
     parser.add_argument("--config_path", type=str, default="configs/ltxv_2b_lora.yaml", help="Path to the YAML training config")
     parser.add_argument("--preprocessed_data_root", type=str, default=None, help="Override for data.preprocessed_data_root in YAML")
-    parser.add_argument("--video_dims", type=str, default=None, help="Override for validation.video_dims (format: WxHxF, e.g. 768x768x89)")
+    parser.add_argument("--video_dims", type=str, default="768x768x89", help="Override for validation.video_dims in WxHxF format (e.g., 768x768x89)")
 
     args = parser.parse_args()
 
-    # Set default captions_output if not provided.
+    # Set default captions_output if not provided: save in dataset folder as captions.json
     if args.captions_output is None:
         args.captions_output = os.path.join(args.dataset_dir, "captions.json")
 
-    # Create a unique timestamped folder for training output.
+    # Create a unique timestamped folder for training outputs.
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     training_output_dir = os.path.join(args.output_dir_base, f"train_{timestamp}")
     os.makedirs(training_output_dir, exist_ok=True)
